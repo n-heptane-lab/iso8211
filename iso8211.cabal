@@ -1,0 +1,19 @@
+name:                iso8211
+version:             0.1.0.0
+synopsis:            An ISO8211 parser target towards use with IHO S-57 vector chart files
+homepage:            http://www.github.com/stepcut/iso8211
+license:             BSD3
+license-file:        LICENSE
+author:              Jeremy Shaw
+maintainer:          jeremy@n-heptane.com
+category:            Data
+build-type:          Simple
+extra-source-files:  ChangeLog.md
+cabal-version:       >=1.10
+
+library
+  exposed-modules:     Data.S57.ASCII
+  build-depends:       base >=4.9 && <4.10
+                     , bytestring >=0.10 && <0.11
+                     , attoparsec >=0.13 && <0.14
+  default-language:    Haskell2010
