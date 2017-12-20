@@ -1,6 +1,6 @@
 name:                iso8211
 version:             0.1.0.0
-synopsis:            An ISO8211 parser target towards use with IHO S-57 vector chart files
+synopsis:            An ISO8211 parser targeted towards use with IHO S-57 vector chart files
 homepage:            http://www.github.com/stepcut/iso8211
 license:             BSD3
 license-file:        LICENSE
