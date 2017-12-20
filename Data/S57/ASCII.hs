@@ -81,13 +81,69 @@ The data description for the "0001" field is mandatory for use in an S-57 confor
 
 Directory is [(field tag, field length, field position)]
 -}
-type FieldTag = String
+type FieldTag = ByteString
 
 data DirectoryEntry = DirectoryEntry
   { _fieldTag      :: FieldTag
   , _fieldLength   :: ByteString
   , _fieldPosition :: ByteString
   }
+  deriving Show
 
-pISO8211 = pDDRLeader
+c2i :: Char -> Int
+c2i '0' = 0
+c2i '1' = 1
+c2i '2' = 2
+c2i '3' = 3
+c2i '4' = 4
+c2i '5' = 5
+c2i '6' = 6
+c2i '7' = 7
+c2i '8' = 8
+c2i '9' = 9
+
+pDirectoryEntry :: EntryMap -> Parser DirectoryEntry
+pDirectoryEntry (EntryMap sfl sfp _ sft) =
+  do ft <- A.take $ c2i sft
+     fl <- A.take $ c2i sfl
+     fp <- A.take $ c2i sfp
+     pure $ DirectoryEntry ft fl fp
+
+data Directory = Directory [DirectoryEntry]
+  deriving Show
+
+pDirectory :: EntryMap -> Parser Directory
+pDirectory entryMap =
+  do des <- A.manyTill (pDirectoryEntry entryMap) ft
+     pure $ Directory des
+
+ut :: Parser ()
+ut =
+  do A.char '\x1f'
+     pure ()
+
+ft :: Parser ()
+ft =
+  do A.char '\x1e'
+     pure ()
+
+pNull :: Parser ()
+pNull =
+  do A.char '\0'
+     A.char '\0'
+     pure ()
+
+data Module = Module
+  { _ddrLeader :: DDRLeader
+  , _ddrDirectory :: Directory
+  }
+  deriving Show
+
+pModule :: Parser Module
+pModule =
+  do l <- pDDRLeader
+     d <- pDirectory (_entryMap l)
+     pure $ Module l d
+
+pISO8211 = pModule
 
