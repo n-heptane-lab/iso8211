@@ -6,8 +6,8 @@ import Data.Attoparsec.ByteString.Char8 (parseOnly)
 
 main :: IO ()
 main =
-  do -- c <- B.readFile "ENC_ROOT/US2MI01M/US2MI01M.000"
-     c <- B.readFile "ENC_ROOT/US4IL10M/US4IL10M.001"
+  do c <- B.readFile "ENC_ROOT/US2MI01M/US2MI01M.000"
+     -- c <- B.readFile "ENC_ROOT/US4IL10M/US4IL10M.001"
      let r = parseOnly pISO8211 c
      print r
      case r of

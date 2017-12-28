@@ -443,6 +443,7 @@ pFields ddfs (Directory entries) = pFields' entries
                "FRID" -> FFRID <$> pFRID fcs
                "FOID" -> FFOID <$> pFOID fcs
                "ATTF" -> FATTF <$> pATTFS fcs
+               "FFPT" -> FFFPT <$> pFFPTS fcs
                "FSPT" -> FFSPT <$> pFSPTS fcs
                _      -> pure (Unknown ft) <* skipField
                _      -> fail $ "No parser for " ++ show ft
@@ -865,6 +866,41 @@ data FSPTS = FSPTS { _fspts :: [FSPT] }
 pFSPTS :: FormatControls -> Parser FSPTS
 pFSPTS fcs = FSPTS <$> A.manyTill (pFSPT fcs) pFt
 
+data RelationshipIndicator
+  = Master
+  | Slave
+  | Peer
+  deriving Show
+
+pRelationshipIndicator :: DataFormat -> Parser RelationshipIndicator
+pRelationshipIndicator df =
+  case df of
+    (B1W w) -> do v <- pB1W w
+                  case v of
+                    1   -> pure Master
+                    2   -> pure Slave
+                    3   -> pure Peer
+                    _   -> fail $ "Invalid relationship indicator = " ++ show v
+
+data FFPT = FFPT
+  { lnam :: ForeignPointer
+  , rind :: RelationshipIndicator
+  , comt :: ASCII 'BT
+  }
+  deriving Show
+
+pFFPT :: FormatControls -> Parser FFPT
+pFFPT (FormatControls fcs) =
+  FFPT <$> pForeignPointer (fcs!!0)
+       <*> pRelationshipIndicator (fcs!!1)
+       <*> pBT
+
+data FFPTS = FFPTS { _ffpts :: [FFPT] }
+  deriving Show
+
+pFFPTS :: FormatControls -> Parser FFPTS
+pFFPTS fcs = FFPTS <$> A.manyTill (pFFPT fcs) pFt
+
 -- incompleted
 data VRID = VRID
   { rcnm :: RecordName
@@ -892,6 +928,7 @@ data Field
  | FFOID FOID
  | FATTF ATTFS
  | FFSPT FSPTS
+ | FFFPT FFPTS
  | FVRID VRID
  | Unknown FieldTag
  deriving Show
