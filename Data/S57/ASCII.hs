@@ -1,10 +1,28 @@
 {-# language OverloadedStrings #-}
+{-# language DuplicateRecordFields #-}
+{-# language DataKinds #-}
+{-# language KindSignatures #-}
+{-# language MagicHash #-}
 module Data.S57.ASCII where
 
 import Control.Applicative ((<|>), liftA2, liftA3, optional)
 import Data.ByteString (ByteString)
 import Data.Attoparsec.ByteString.Char8 (Parser)
+import qualified Data.ByteString.Unsafe   as B
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import qualified Data.Map as Map
+import           Data.Map (Map)
+import Data.Maybe (fromJust)
+import Data.Bits
+import GHC.Base (Int(..), uncheckedShiftL#)
+import GHC.Word
+
+shiftl_w16 :: Word16 -> Int -> Word16
+shiftl_w32 :: Word32 -> Int -> Word32
+
+shiftl_w16 (W16# w) (I# i) = W16# (w `uncheckedShiftL#`   i)
+shiftl_w32 (W32# w) (I# i) = W32# (w `uncheckedShiftL#`   i)
+
 
 -- http://www.dtic.mil/dtic/tr/fulltext/u2/a281594.pdf
 -- https://github.com/freekvw/iso8211/blob/master/iso8211.py
@@ -32,7 +50,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 
 -- 0001 - Record Identifier?
 
-data DDRLeader = DDRLeader
+data Leader = Leader
   { _recordLength                 :: ByteString -- 5 characters?
   , _interchangeLevel             :: Char -- "3"
   , _leaderIdentifier             :: Char -- "L"
@@ -46,7 +64,7 @@ data DDRLeader = DDRLeader
   }
   deriving (Show)
 
-pDDRLeader :: Parser DDRLeader
+pDDRLeader :: Parser Leader
 pDDRLeader =
   do rl  <- A.take 5
      il  <- A.char '3'
@@ -58,7 +76,21 @@ pDDRLeader =
      sa  <- A.take 5
      ecs <- liftA3 (,,) (A.char ' ') (A.char '!') (A.char ' ')
      em  <- pEntryMap
-     pure $ DDRLeader rl il li ice vn ai fcl sa ecs em
+     pure $ Leader rl il li ice vn ai fcl sa ecs em
+
+pDRLeader :: Parser Leader
+pDRLeader =
+  do rl  <- A.take 5
+     il  <- A.char ' '
+     li  <- A.char 'D'
+     ice <- A.char ' '
+     vn  <- A.char ' '
+     ai  <- A.char ' '
+     fcl <- liftA2 (,) (A.char ' ') (A.char ' ')
+     sa  <- A.take 5
+     ecs <- liftA3 (,,) (A.char ' ') (A.char ' ') (A.char ' ')
+     em  <- pEntryMap
+     pure $ Leader rl il li ice vn ai fcl sa ecs em
 
 data EntryMap = EntryMap
   { _sizeOfFieldLength   :: Char -- "1" - "9"
@@ -122,21 +154,27 @@ data Directory = Directory { _directoryEntries :: [DirectoryEntry] }
 
 pDirectory :: EntryMap -> Parser Directory
 pDirectory entryMap =
-  do des <- A.manyTill (pDirectoryEntry entryMap) ft
+  do des <- A.manyTill (pDirectoryEntry entryMap) pFt
      pure $ Directory des
 
+ut = '\x1f'
 
 -- | unit terminator - Δ
-ut :: Parser ()
-ut =
-  do A.char '\x1f'
+pUt :: Parser ()
+pUt =
+  do A.char ut
      pure ()
 
+ft = '\x1e'
+
 -- | field terminator - ∇
-ft :: Parser ()
-ft =
-  do A.char '\x1e'
+pFt :: Parser ()
+pFt =
+  do A.char ft
      pure ()
+
+skipField :: Parser ()
+skipField = A.manyTill A.anyChar pFt *> pure ()
 
 pNull :: Parser ()
 pNull =
@@ -145,7 +183,7 @@ pNull =
      pure ()
 
 pFieldName :: Parser ByteString
-pFieldName = A.takeTill ((==) '\x1f') <* ut
+pFieldName = A.takeTill ((==) ut) <* pUt
 
 data TruncatedEscapeSequence
   = LexicalLevel0
@@ -176,8 +214,8 @@ pFieldControlFieldBody :: Parser FieldControlField
 pFieldControlFieldBody =
   do pPrintableGraphics
      _tes <- pTruncatedEscapeSequence
-     ut
-     pairs <- A.manyTill pFieldPair ft
+     pUt
+     pairs <- A.manyTill pFieldPair pFt
      pure $ FieldControlField pairs
 
 pFieldControlField :: Parser FieldControlField
@@ -214,7 +252,7 @@ data ArrayDescriptor
 
 pArrayDescriptor :: Parser ArrayDescriptor
 pArrayDescriptor =
-  do A.manyTill A.anyChar ut
+  do A.manyTill A.anyChar pUt
      pure ArrayDescriptor
 
 
@@ -269,12 +307,35 @@ pDataFormat =
          A.char ')'
          pure $ ((c2i i10) * 10) + (c2i i1)
 
-pA :: Int -> Parser ByteString
-pA l = A.take l
+pA :: Maybe Int -> Parser ByteString
+pA (Just l) = A.take l
 
 pI :: Int -> Parser Int
 pI l = implicit2i <$> A.count l A.digit
 
+pR :: Maybe Int -> Parser ByteString
+pR (Just l) = A.take l
+
+pB1W :: Int -> Parser Word32
+pB1W 1 =
+  do s <- A.take 1
+     pure $! fromIntegral (B.unsafeHead s)
+
+pB1W 2 =
+  do s <- A.take 2
+     pure $! fromIntegral $
+             (fromIntegral (s `B.unsafeIndex` 1) `shiftl_w16` 8) .|.
+             (fromIntegral (s `B.unsafeIndex` 0) )
+
+pB1W 4 =
+  do s <- A.take 4
+     return $!
+       (fromIntegral (s `B.unsafeIndex` 3) `shiftl_w32` 24) .|.
+       (fromIntegral (s `B.unsafeIndex` 2) `shiftl_w32` 16) .|.
+       (fromIntegral (s `B.unsafeIndex` 1) `shiftl_w32`  8) .|.
+       (fromIntegral (s `B.unsafeIndex` 0) )
+
+--
 data FormatControls = FormatControls
   { _dataFormats :: [DataFormat]
   }
@@ -332,15 +393,202 @@ data DataDescriptiveField = DataDescriptiveField
 
 pDataDescriptiveField :: Parser DataDescriptiveField
 pDataDescriptiveField =
-  DataDescriptiveField <$> pFieldControls <*> pFieldName <*> pArrayDescriptor <*> pFormatControls <* ft
+  DataDescriptiveField <$> pFieldControls <*> pFieldName <*> pArrayDescriptor <*> pFormatControls <* pFt
 
-data Module = Module
-  { _ddrLeader             :: DDRLeader
-  , _ddrDirectory          :: Directory
-  , _fieldControlField     :: FieldControlField
-  , _dataDescriptiveFields :: [DataDescriptiveField]
+
+data DataRecord = DataRecord
+  { _drLeader    :: Leader
+  , _drDirectory :: Directory
+  , _drFields    :: [Field]
   }
   deriving Show
+
+pDataRecord :: Map FieldTag DataDescriptiveField -> Parser DataRecord
+pDataRecord ddf =
+  do leader <- pDRLeader
+     directory <- pDirectory (_entryMap leader)
+     skipField
+     dsid <- pDSID (_formatControls $ fromJust (Map.lookup "DSID" ddf))
+     pure (DataRecord leader directory [FDSID dsid])
+
+data TextDomain
+  = BT
+  | GT
+  | DG
+  | DATE
+  | INT
+  | REAL
+  | AN
+  | HEX
+    deriving Show
+
+data ASCII (dom :: TextDomain) = ASCII ByteString
+ deriving Show
+
+data RecordName
+  = DS
+  deriving Show
+
+pRecordName :: DataFormat -> Parser RecordName
+pRecordName df =
+  case df of
+    (A ml) ->
+      do r <- pA ml
+         case r of
+           "DS" -> pure DS
+           _ -> fail $ show r ++ " is not a known record name"
+    (B1W i) ->
+      do r <- pB1W i
+         case r of
+           10 -> pure DS
+           _ -> fail $ show r ++ " is not a known record name"
+
+newtype RecordID = RecordID { _recordID :: Word32 }
+  deriving Show
+
+pRecordID :: DataFormat -> Parser RecordID
+pRecordID df =
+  case df of
+    (B1W w) -> RecordID <$> pB1W w
+
+data ExchangePurpose
+  = New
+  | Revision
+    deriving Show
+
+pExchangePurpose :: DataFormat -> Parser ExchangePurpose
+pExchangePurpose df =
+  case df of
+    (B1W w) ->
+      do v <- pB1W w
+         case v of
+           1 -> pure New
+           2 -> pure Revision
+
+pIntu :: DataFormat -> Parser Int
+pIntu df =
+  case df of
+    (B1W 1) ->
+      do v <- pB1W 1
+         pure (fromIntegral v)
+
+data ProductSpecification
+  = ENC -- ENC Electronic Navigation Chart
+  | ODD -- IHO Object Catalogue Data Direction
+    deriving Show
+
+pProductSpecification :: DataFormat -> Parser ProductSpecification
+pProductSpecification df =
+  case df of
+    (B1W w) ->
+       do v <- pB1W w
+          case v of
+            1 -> pure ENC
+            2 -> pure ODD
+            _ -> fail $ "Unknown product specification = " ++ show v
+
+data ApplicationProfileIdentification
+  = EN -- ENC New
+  | ER -- ENC Revision
+  | DD -- IHO Data dictionary
+    deriving Show
+
+pApplicationProfileIdentification :: DataFormat -> Parser ApplicationProfileIdentification
+pApplicationProfileIdentification df =
+  case df of
+    (B1W w) ->
+      do v <- pB1W w
+         case v of
+           1 -> pure EN
+           2 -> pure ER
+           3 -> pure DD
+
+data DSID = DSID
+  { rcnm :: RecordName
+  , rcid :: RecordID
+  , expp :: ExchangePurpose
+  , intu :: Int
+  , dsnm :: ASCII 'BT
+  , edtn :: ASCII 'BT
+  , updn :: ASCII 'BT
+  , uadt :: ASCII 'DATE
+  , isdt :: ASCII 'DATE
+  , sted :: ASCII 'REAL -- actually R(4)
+  , prsp :: ProductSpecification
+  , psdn :: ASCII 'BT
+  , pred :: ASCII 'BT
+  , prof :: ApplicationProfileIdentification
+  , agen :: ProducingAgency
+  , comt :: ASCII 'BT
+  }
+ deriving Show
+
+data ProducingAgency
+ = NOAA
+ | ProducingAgency Word32
+ deriving Show
+
+
+-- need more information to implement correctly
+pProducingAgency :: DataFormat -> Parser ProducingAgency
+pProducingAgency df =
+  case df of
+    (B1W w) ->
+      do v <- pB1W w
+         case v of
+           550 -> pure NOAA
+           _   -> pure (ProducingAgency v)
+
+pASCII = ASCII <$> A.takeTill ((==) ut) <* pUt
+
+pAN :: DataFormat -> Parser (ASCII 'AN)
+pAN df =
+  case df of
+    (A w) -> ASCII <$> pA w
+
+pBT :: Parser (ASCII 'BT)
+pBT = pASCII
+
+pDate :: DataFormat -> Parser (ASCII 'DATE)
+pDate df =
+  case df of
+    (A i) -> ASCII <$> pA i
+
+pReal :: Maybe Int -> Parser (ASCII 'REAL)
+pReal i = ASCII <$> (pR i)
+
+pDSID :: FormatControls -> Parser DSID
+pDSID (FormatControls fcs) =
+  DSID <$> pRecordName      (fcs!!0)
+       <*> pRecordID        (fcs!!1)
+       <*> pExchangePurpose (fcs!!2)
+       <*> pIntu            (fcs!!3)
+       <*> pBT              -- 4
+       <*> pBT              -- 5
+       <*> pBT              -- 6
+       <*> pDate            (fcs!!7)
+       <*> pDate            (fcs!!8)
+       <*> pReal              (Just 4) -- (fcs!!9)
+       <*> pProductSpecification (fcs!!10)
+       <*> pBT              -- 11
+       <*> pBT              -- 12
+       <*> pApplicationProfileIdentification (fcs!!13)
+       <*> pProducingAgency (fcs!!14)
+       <*> pBT              -- 15
+
+
+data Module = Module
+  { _ddrLeader             :: Leader
+  , _ddrDirectory          :: Directory
+  , _fieldControlField     :: FieldControlField
+  , _dataDescriptiveFields :: Map FieldTag DataDescriptiveField
+  , _drs                   :: [DataRecord]
+  }
+  deriving Show
+
+data Field
+ = FDSID DSID
+ deriving Show
 
 pModule :: Parser Module
 pModule =
@@ -348,8 +596,10 @@ pModule =
      d <- pDirectory (_entryMap l)
      fcf <- pFieldControlField
      -- we substract 1 from the directory length because we already parsed the field control field
-     ddf <- A.count (pred (length $ _directoryEntries d)) pDataDescriptiveField
-     pure $ Module l d fcf ddf
+     ddf' <- A.count (Prelude.pred (length $ _directoryEntries d)) pDataDescriptiveField
+     let ddf = Map.fromList $ zipWith (\d df -> (_fieldTag d, df)) (drop 1 $ _directoryEntries d) ddf'
+     dr <- pDataRecord ddf
+     pure $ Module l d fcf ddf [dr]
 
 pISO8211 = pModule
 
