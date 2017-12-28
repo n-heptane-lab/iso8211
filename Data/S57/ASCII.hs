@@ -417,14 +417,40 @@ data DataRecord = DataRecord
   }
   deriving Show
 
+p0001 :: FormatControls -> Parser RecordID
+p0001 (FormatControls fcs) =
+  pRecordID (fcs!!0) <* pFt
+
+-- FIXME: should be tail recursive
+pFields :: Map FieldTag DataDescriptiveField -> Directory -> Parser [Field]
+pFields ddfs (Directory entries) = pFields' entries
+  where
+    pFields' [] = pure []
+    pFields' ((DirectoryEntry ft _ _):ds) =
+      do let fcs = _formatControls $ fromJust (Map.lookup ft ddfs)
+         f <- case ft of
+               "0001" -> RecordIdentifier <$> p0001 fcs
+               "DSID" -> FDSID <$> pDSID fcs
+               "DSSI" -> FDSSI <$> pDSSI fcs
+               "FRID" -> FFRID <$> pFRID fcs
+               _      -> pure Unknown <* skipField
+               _      -> fail $ "No parser for " ++ show ft
+         fs <- pFields' ds
+         pure (f:fs)
+
 pDataRecord :: Map FieldTag DataDescriptiveField -> Parser DataRecord
 pDataRecord ddf =
   do leader <- pDRLeader
      directory <- pDirectory (_entryMap leader)
-     skipField
+{-     
+     rcid  <- p0001 (_formatControls $ fromJust (Map.lookup "0001" ddf))
      dsid <- pDSID (_formatControls $ fromJust (Map.lookup "DSID" ddf))
      dssi <- pDSSI (_formatControls $ fromJust (Map.lookup "DSSI" ddf))
-     pure (DataRecord leader directory [FDSID dsid, FDSSI dssi])
+[RecordIdentifier rcid, FDSID dsid, FDSSI dssi]
+-}
+--     vrid <- pVRID (_formatControls $ fromJust (Map.lookup "VRID" ddf))
+     fields <- pFields ddf directory
+     pure (DataRecord leader directory fields)
 
 data TextDomain
   = BT
@@ -442,6 +468,11 @@ data ASCII (dom :: TextDomain) = ASCII ByteString
 
 data RecordName
   = DS
+  | FE
+  | VI
+  | VC
+  | VE
+  | VF
   deriving Show
 
 pRecordName :: DataFormat -> Parser RecordName
@@ -455,7 +486,12 @@ pRecordName df =
     (B1W i) ->
       do r <- pB1W i
          case r of
-           10 -> pure DS
+           10  -> pure DS
+           100 -> pure FE
+           110 -> pure VI -- isolated node
+           120 -> pure VC -- connected node
+           130 -> pure VE -- edge
+           140 -> pure VF -- face
            _ -> fail $ show r ++ " is not a known record name"
 
 newtype RecordID = RecordID { _recordID :: Word32 }
@@ -648,6 +684,71 @@ pDSSI (FormatControls fcs) =
        <*> pInt           (fcs!!10)
        <* pFt
 
+data ObjectGeometricPrimitive
+  = Point  -- ^ Point
+  | Line  -- ^ Line
+  | Area  -- ^ Area
+  | NA  -- ^ Object does not directly reference any spatial objects
+  deriving Show
+
+pObjectGeometricPrimitive :: DataFormat -> Parser ObjectGeometricPrimitive
+pObjectGeometricPrimitive df =
+  case df of
+    (B1W w) ->
+      do r <- pB1W w
+         case r of
+           1 -> pure Point
+           2 -> pure Line
+           3 -> pure Area
+           4 -> pure NA
+
+data RecordUpdateInstruction
+  = Insert
+  | Delete
+  | Modify
+  deriving Show
+
+pRecordUpdateInstruction :: DataFormat -> Parser RecordUpdateInstruction
+pRecordUpdateInstruction df =
+  case df of
+    (B1W w) -> do v <- pB1W w
+                  case v of
+                    1 -> pure Insert
+                    2 -> pure Delete
+                    3 -> pure Modify
+
+data FRID = FRID
+  { rcnm :: RecordName
+  , rcid :: RecordID
+  , prim :: ObjectGeometricPrimitive
+  , grup :: Word8
+  , objl :: Word16
+  , rver :: Word16
+  , ruin :: RecordUpdateInstruction
+  }
+  deriving Show
+
+pFRID :: FormatControls -> Parser FRID
+pFRID (FormatControls fcs) =
+  FRID <$> pRecordName (fcs!!0)
+       <*> pRecordID   (fcs!!1)
+       <*> pObjectGeometricPrimitive (fcs!!2)
+       <*> (fromIntegral <$> pInt (fcs!!3))
+       <*> (fromIntegral <$> pInt (fcs!!4))
+       <*> (fromIntegral <$> pInt (fcs!!5))
+       <*> pRecordUpdateInstruction (fcs!!6)
+       <* pFt
+
+-- incompleted
+data VRID = VRID
+  { rcnm :: RecordName
+  }
+ deriving Show
+
+pVRID :: FormatControls -> Parser VRID
+pVRID (FormatControls fcs) =
+  VRID <$> pRecordName (fcs!!0)
+
 data Module = Module
   { _ddrLeader             :: Leader
   , _ddrDirectory          :: Directory
@@ -658,8 +759,12 @@ data Module = Module
   deriving Show
 
 data Field
- = FDSID DSID
+ = RecordIdentifier RecordID
+ | FDSID DSID
  | FDSSI DSSI
+ | FFRID FRID
+ | FVRID VRID
+ | Unknown
  deriving Show
 
 pModule :: Parser Module
@@ -670,8 +775,9 @@ pModule =
      -- we substract 1 from the directory length because we already parsed the field control field
      ddf' <- A.count (Prelude.pred (length $ _directoryEntries d)) pDataDescriptiveField
      let ddf = Map.fromList $ zipWith (\d df -> (_fieldTag d, df)) (drop 1 $ _directoryEntries d) ddf'
-     dr <- pDataRecord ddf
-     pure $ Module l d fcf ddf [dr]
+     dr0 <- pDataRecord ddf
+     dr1 <- pDataRecord ddf
+     pure $ Module l d fcf ddf [dr0, dr1]
 
 pISO8211 = pModule
 
