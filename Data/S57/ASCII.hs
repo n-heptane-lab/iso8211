@@ -10,12 +10,14 @@ import Data.ByteString (ByteString)
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.ByteString.Unsafe   as B
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import           Data.Attoparsec.ByteString (anyWord8)
 import qualified Data.Map as Map
 import           Data.Map (Map)
 import Data.Maybe (fromJust)
 import Data.Bits
 import GHC.Base (Int(..), uncheckedShiftL#)
 import GHC.Word
+import Prelude hiding (GT)
 
 shiftl_w16 :: Word16 -> Int -> Word16
 shiftl_w32 :: Word32 -> Int -> Word32
@@ -335,6 +337,12 @@ pB1W 4 =
        (fromIntegral (s `B.unsafeIndex` 1) `shiftl_w32`  8) .|.
        (fromIntegral (s `B.unsafeIndex` 0) )
 
+pB :: Int -> Parser [Word8]
+pB l
+  | l `mod` 8 == 0 =
+    let c = l `div` 8
+    in A.count c anyWord8
+
 data LexicalLevel
   = LexicalLevel0
   | LexicalLevel1
@@ -433,7 +441,10 @@ pFields ddfs (Directory entries) = pFields' entries
                "DSID" -> FDSID <$> pDSID fcs
                "DSSI" -> FDSSI <$> pDSSI fcs
                "FRID" -> FFRID <$> pFRID fcs
-               _      -> pure Unknown <* skipField
+               "FOID" -> FFOID <$> pFOID fcs
+               "ATTF" -> FATTF <$> pATTFS fcs
+               "FSPT" -> FFSPT <$> pFSPTS fcs
+               _      -> pure (Unknown ft) <* skipField
                _      -> fail $ "No parser for " ++ show ft
          fs <- pFields' ds
          pure (f:fs)
@@ -600,6 +611,9 @@ pAN df =
 pBT :: Parser (ASCII 'BT)
 pBT = pASCII
 
+pGT :: Parser (ASCII 'GT)
+pGT = pASCII
+
 pDate :: DataFormat -> Parser (ASCII 'DATE)
 pDate df =
   case df of
@@ -612,6 +626,9 @@ pInt :: DataFormat -> Parser Word32
 pInt df =
   case df of
     (B1W w) -> pB1W w
+
+pIntegral :: (Integral i) => DataFormat -> Parser i
+pIntegral df = fromIntegral <$> pInt df
 
 pDSID :: FormatControls -> Parser DSID
 pDSID (FormatControls fcs) =
@@ -739,6 +756,115 @@ pFRID (FormatControls fcs) =
        <*> pRecordUpdateInstruction (fcs!!6)
        <* pFt
 
+data FOID = FOID
+  { agen :: ProducingAgency
+  , fidn :: Word32
+  , fids :: Word16
+  }
+  deriving Show
+
+pFOID :: FormatControls -> Parser FOID
+pFOID (FormatControls fcs) =
+  FOID <$> pProducingAgency (fcs!!0)
+       <*> pInt (fcs!!1)
+       <*> (fromIntegral <$> (pInt (fcs!!2)))
+       <* pFt
+
+data ATTFS = ATTFS [ATTF]
+ deriving Show
+
+data ATTF = ATTF
+  { attl :: Word16
+  , atvl :: ASCII 'GT
+  }
+  deriving Show
+
+pATTF :: FormatControls -> Parser ATTF
+pATTF (FormatControls fcs) =
+  ATTF <$> pIntegral (fcs!!0) <*> pGT
+
+pATTFS :: FormatControls -> Parser ATTFS
+pATTFS fcs = ATTFS <$> A.manyTill (pATTF fcs) pFt
+
+data ForeignPointer = ForeignPointer [Word8]
+                    deriving Show
+
+pForeignPointer :: DataFormat -> Parser ForeignPointer
+pForeignPointer df =
+  case df of
+    (B w) -> ForeignPointer <$> (pB w)
+
+data Orientation
+  = Forward
+  | Reverse
+  | NullOrientation
+    deriving Show
+
+pOrientation :: DataFormat -> Parser Orientation
+pOrientation df =
+  case df of
+    (B1W w) -> do v <- pB1W w
+                  case v of
+                    1   -> pure Forward
+                    2   -> pure Reverse
+                    255 -> pure NullOrientation
+                    _   -> fail $ "Invalid orientation = " ++ show v
+
+data UsageIndicator
+  = Exterior
+  | Interior
+  | ExteriorBoundary
+  | NullUsageIndicator
+    deriving Show
+
+pUsageIndicator :: DataFormat -> Parser UsageIndicator
+pUsageIndicator df =
+  case df of
+    (B1W w) -> do v <- pB1W w
+                  case v of
+                    1   -> pure Exterior
+                    2   -> pure Interior
+                    255 -> pure NullUsageIndicator
+                    _   -> fail $ "Invalid usage indicator = " ++ show v
+
+data MaskingIndicator
+  = Mask
+  | Show
+  | NullMaskingIndicator
+    deriving Show
+
+pMaskingIndicator :: DataFormat -> Parser MaskingIndicator
+pMaskingIndicator df =
+  case df of
+    (B1W w) -> do v <- pB1W w
+                  case v of
+                    1   -> pure Mask
+                    2   -> pure Show
+                    255 -> pure NullMaskingIndicator
+                    _   -> fail $ "Invalid masking indicator = " ++ show v
+
+
+data FSPT = FSPT
+  { name :: ForeignPointer
+  , ornt :: Orientation
+  , usag :: UsageIndicator
+  , mask :: MaskingIndicator
+  }
+  deriving Show
+
+pFSPT :: FormatControls -> Parser FSPT
+pFSPT (FormatControls fcs) =
+  FSPT <$> pForeignPointer   (fcs!!0)
+       <*> pOrientation      (fcs!!1)
+       <*> pUsageIndicator   (fcs!!2)
+       <*> pMaskingIndicator (fcs!!3)
+
+data FSPTS = FSPTS { _fspts :: [FSPT] }
+  deriving Show
+
+pFSPTS :: FormatControls -> Parser FSPTS
+pFSPTS fcs = FSPTS <$> A.manyTill (pFSPT fcs) pFt
+
 -- incompleted
 data VRID = VRID
   { rcnm :: RecordName
@@ -763,8 +889,11 @@ data Field
  | FDSID DSID
  | FDSSI DSSI
  | FFRID FRID
+ | FFOID FOID
+ | FATTF ATTFS
+ | FFSPT FSPTS
  | FVRID VRID
- | Unknown
+ | Unknown FieldTag
  deriving Show
 
 pModule :: Parser Module
@@ -775,9 +904,8 @@ pModule =
      -- we substract 1 from the directory length because we already parsed the field control field
      ddf' <- A.count (Prelude.pred (length $ _directoryEntries d)) pDataDescriptiveField
      let ddf = Map.fromList $ zipWith (\d df -> (_fieldTag d, df)) (drop 1 $ _directoryEntries d) ddf'
-     dr0 <- pDataRecord ddf
-     dr1 <- pDataRecord ddf
-     pure $ Module l d fcf ddf [dr0, dr1]
+     drs <- A.many' (pDataRecord ddf)
+     pure $ Module l d fcf ddf drs
 
 pISO8211 = pModule
 
