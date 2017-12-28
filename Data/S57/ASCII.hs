@@ -13,6 +13,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import           Data.Attoparsec.ByteString (anyWord8)
 import qualified Data.Map as Map
 import           Data.Map (Map)
+import Data.Int (Int8, Int16, Int32)
 import Data.Maybe (fromJust)
 import Data.Bits
 import GHC.Base (Int(..), uncheckedShiftL#)
@@ -337,6 +338,23 @@ pB1W 4 =
        (fromIntegral (s `B.unsafeIndex` 1) `shiftl_w32`  8) .|.
        (fromIntegral (s `B.unsafeIndex` 0) )
 
+pB2W :: (Integral i) => Int -> Parser i
+pB2W 1 =
+  do s <- A.take 1
+     pure $! fromIntegral (fromIntegral (B.unsafeHead s) :: Int8)
+pB2W 2 =
+  do s <- A.take 2
+     return $! fromIntegral
+       ((fromIntegral (s `B.unsafeIndex` 1) `shiftL` 8) .|.
+        (fromIntegral (s `B.unsafeIndex` 0) ) :: Int16)
+pB2W 4 =
+  do s <- A.take 4
+     return $! fromIntegral $
+        ((fromIntegral (s `B.unsafeIndex` 3) `shiftL` 24) .|.
+         (fromIntegral (s `B.unsafeIndex` 2) `shiftL` 16) .|.
+         (fromIntegral (s `B.unsafeIndex` 1) `shiftL`  8) .|.
+         (fromIntegral (s `B.unsafeIndex` 0) ) :: Int32)
+
 pB :: Int -> Parser [Word8]
 pB l
   | l `mod` 8 == 0 =
@@ -445,6 +463,9 @@ pFields ddfs (Directory entries) = pFields' entries
                "ATTF" -> FATTF <$> pATTFS fcs
                "FFPT" -> FFFPT <$> pFFPTS fcs
                "FSPT" -> FFSPT <$> pFSPTS fcs
+               "VRID" -> FVRID <$> pVRID fcs
+               "SG3D" -> FSG3D <$> pSG3DS fcs
+               "DSPM" -> FDSPM <$> pDSPM fcs
                _      -> pure (Unknown ft) <* skipField
                _      -> fail $ "No parser for " ++ show ft
          fs <- pFields' ds
@@ -480,6 +501,7 @@ data ASCII (dom :: TextDomain) = ASCII ByteString
 
 data RecordName
   = DS
+  | DP
   | FE
   | VI
   | VC
@@ -499,6 +521,7 @@ pRecordName df =
       do r <- pB1W i
          case r of
            10  -> pure DS
+           20  -> pure DP
            100 -> pure FE
            110 -> pure VI -- isolated node
            120 -> pure VC -- connected node
@@ -630,6 +653,11 @@ pInt df =
 
 pIntegral :: (Integral i) => DataFormat -> Parser i
 pIntegral df = fromIntegral <$> pInt df
+
+pInteger :: (Integral i) => DataFormat -> Parser i
+pInteger df =
+  case df of
+  (B2W w) -> pB2W w
 
 pDSID :: FormatControls -> Parser DSID
 pDSID (FormatControls fcs) =
@@ -904,12 +932,89 @@ pFFPTS fcs = FFPTS <$> A.manyTill (pFFPT fcs) pFt
 -- incompleted
 data VRID = VRID
   { rcnm :: RecordName
+  , rcid :: RecordID
+  , rver :: Word16
+  , ruin :: RecordUpdateInstruction
   }
  deriving Show
 
 pVRID :: FormatControls -> Parser VRID
 pVRID (FormatControls fcs) =
   VRID <$> pRecordName (fcs!!0)
+       <*> pRecordID   (fcs!!1)
+       <*> pIntegral   (fcs!!2)
+       <*> pRecordUpdateInstruction (fcs!!3)
+       <*  pFt
+
+data SG3D = SG3D
+  { ycoo :: Int32
+  , xcoo :: Int32
+  , ve3d :: Int32
+  }
+  deriving Show
+
+pSG3D :: FormatControls -> Parser SG3D
+pSG3D (FormatControls fcs) =
+  SG3D <$> pInteger (fcs!!0)
+       <*> pInteger (fcs!!1)
+       <*> pInteger (fcs!!2)
+
+data SG3DS = SG3DS { _sg3ds :: [SG3D] }
+  deriving Show
+
+pSG3DS :: FormatControls -> Parser SG3DS
+pSG3DS fcs = SG3DS <$> A.manyTill (pSG3D fcs) pFt
+
+data CoordinateUnits
+  = LatitudeLongitude -- ^ LatitudeLongitude
+  | EastingNorthing-- ^ Easting/Northing
+  | UnitsChart -- ^ Units on the chart/map
+    deriving Show
+
+pCoordinateUnits :: DataFormat -> Parser CoordinateUnits
+pCoordinateUnits df =
+  case df of
+    (B1W w) -> do v <- pB1W w
+                  case v of
+                    1 -> pure LatitudeLongitude
+                    2 -> pure EastingNorthing
+                    3 -> pure UnitsChart
+
+data DSPM = DSPM
+  { rcnm :: RecordName
+  , rcid :: RecordID
+  , hdat :: Word8
+  , vdat :: Word8
+  , sdat :: Word8
+  , cscl :: Word32
+  , duni :: Word8
+  , huni :: Word8
+  , puni :: Word8
+  , coun :: CoordinateUnits
+  , comf :: Word32
+  , somf :: Word32
+  , comt :: ASCII 'BT
+  }
+  deriving Show
+
+pDSPM :: FormatControls -> Parser DSPM
+pDSPM (FormatControls fcs) =
+  DSPM <$> pRecordName (fcs!!0)
+       <*> pRecordID   (fcs!!1)
+       <*> pIntegral   (fcs!!2)
+       <*> pIntegral   (fcs!!3)
+       <*> pIntegral   (fcs!!4)
+       <*> pIntegral   (fcs!!5)
+       <*> pIntegral   (fcs!!6)
+       <*> pIntegral   (fcs!!7)
+       <*> pIntegral   (fcs!!8)
+       <*> pCoordinateUnits (fcs!!9)
+       <*> pIntegral   (fcs!!10)
+       <*> pIntegral   (fcs!!11)
+       <*> pBT
+       <*  pFt
+
+
 
 data Module = Module
   { _ddrLeader             :: Leader
@@ -930,6 +1035,8 @@ data Field
  | FFSPT FSPTS
  | FFFPT FFPTS
  | FVRID VRID
+ | FSG3D SG3DS
+ | FDSPM DSPM
  | Unknown FieldTag
  deriving Show
 
