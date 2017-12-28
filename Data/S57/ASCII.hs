@@ -186,16 +186,16 @@ pFieldName :: Parser ByteString
 pFieldName = A.takeTill ((==) ut) <* pUt
 
 data TruncatedEscapeSequence
-  = LexicalLevel0
-  | LexicalLevel1
-  | LexicalLevel2
+  = TES0
+  | TES1
+  | TES2
   deriving Show
 
 pTruncatedEscapeSequence :: Parser TruncatedEscapeSequence
 pTruncatedEscapeSequence =
-  A.choice [ A.string "   " *> pure LexicalLevel0
-           , A.string "-A " *> pure LexicalLevel1
-           , A.string "%/A" *> pure LexicalLevel2
+  A.choice [ A.string "   " *> pure TES0
+           , A.string "-A " *> pure TES1
+           , A.string "%/A" *> pure TES2
            ]
 
 data FieldControlField = FieldControlField
@@ -335,7 +335,21 @@ pB1W 4 =
        (fromIntegral (s `B.unsafeIndex` 1) `shiftl_w32`  8) .|.
        (fromIntegral (s `B.unsafeIndex` 0) )
 
---
+data LexicalLevel
+  = LexicalLevel0
+  | LexicalLevel1
+  | LexicalLevel2
+    deriving Show
+
+pLexicalLevel :: DataFormat -> Parser LexicalLevel
+pLexicalLevel df =
+  case df of
+    (B1W w) -> do v <- pB1W w
+                  case v of
+                    0 -> pure LexicalLevel0
+                    1 -> pure LexicalLevel1
+                    2 -> pure LexicalLevel2
+
 data FormatControls = FormatControls
   { _dataFormats :: [DataFormat]
   }
@@ -409,7 +423,8 @@ pDataRecord ddf =
      directory <- pDirectory (_entryMap leader)
      skipField
      dsid <- pDSID (_formatControls $ fromJust (Map.lookup "DSID" ddf))
-     pure (DataRecord leader directory [FDSID dsid])
+     dssi <- pDSSI (_formatControls $ fromJust (Map.lookup "DSSI" ddf))
+     pure (DataRecord leader directory [FDSID dsid, FDSSI dssi])
 
 data TextDomain
   = BT
@@ -557,6 +572,11 @@ pDate df =
 pReal :: Maybe Int -> Parser (ASCII 'REAL)
 pReal i = ASCII <$> (pR i)
 
+pInt :: DataFormat -> Parser Word32
+pInt df =
+  case df of
+    (B1W w) -> pB1W w
+
 pDSID :: FormatControls -> Parser DSID
 pDSID (FormatControls fcs) =
   DSID <$> pRecordName      (fcs!!0)
@@ -575,7 +595,58 @@ pDSID (FormatControls fcs) =
        <*> pApplicationProfileIdentification (fcs!!13)
        <*> pProducingAgency (fcs!!14)
        <*> pBT              -- 15
+       <*  pFt
 
+data DataStructure
+  = CS -- ^ Cartographic Spaghetti
+  | CN -- ^ Chain-node
+  | PG -- ^ Planar Graph
+  | FT -- ^ Full Topology
+  | NO -- ^ Topology is not relevant
+    deriving Show
+
+pDataStructure :: DataFormat -> Parser DataStructure
+pDataStructure df =
+  case df of
+    (B1W w) ->
+      do v <- pB1W w
+         case v of
+           1 -> pure CS
+           2 -> pure CN
+           3 -> pure PG
+           4 -> pure FT
+           5 -> pure NO
+           _ -> fail $ "Unrecognized Data Structure = " ++ show v
+
+data DSSI = DSSI
+  { dstr :: DataStructure
+  , aall :: LexicalLevel
+  , nall :: LexicalLevel
+  , nomr :: Word32
+  , nocr :: Word32
+  , nogr :: Word32
+  , nolr :: Word32
+  , noin :: Word32
+  , nocn :: Word32
+  , noed :: Word32
+  , nofa :: Word32
+  }
+  deriving Show
+
+pDSSI :: FormatControls -> Parser DSSI
+pDSSI (FormatControls fcs) =
+  DSSI <$> pDataStructure (fcs!!0)
+       <*> pLexicalLevel  (fcs!!1)
+       <*> pLexicalLevel  (fcs!!2)
+       <*> pInt           (fcs!!3)
+       <*> pInt           (fcs!!4)
+       <*> pInt           (fcs!!5)
+       <*> pInt           (fcs!!6)
+       <*> pInt           (fcs!!7)
+       <*> pInt           (fcs!!8)
+       <*> pInt           (fcs!!9)
+       <*> pInt           (fcs!!10)
+       <* pFt
 
 data Module = Module
   { _ddrLeader             :: Leader
@@ -588,6 +659,7 @@ data Module = Module
 
 data Field
  = FDSID DSID
+ | FDSSI DSSI
  deriving Show
 
 pModule :: Parser Module
