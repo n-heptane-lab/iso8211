@@ -506,14 +506,20 @@ data ASCII (dom :: TextDomain) = ASCII ByteString
  deriving Show
 
 data RecordName
-  = CD
-  | DS
-  | DP
-  | FE
-  | VI
-  | VC
-  | VE
-  | VF
+  = DS -- ^ Data Set General Information
+  | DP -- ^ Data Set Geographic Reference
+  | DH -- ^ Data Set History
+  | DA -- ^ Data Set Accuracy
+  | CD -- ^ Catalogue Directory
+  | CR -- ^ Catalogue Cross Reference
+  | ID -- ^ Data Dictionary Definition
+  | IO -- ^ Data Dictionary Domain
+  | IS -- ^ Data Dictionary Schema
+  | FE -- ^ Feature
+  | VI -- ^ Isolated Node
+  | VC -- ^ Connected Node
+  | VE -- ^ Edge
+  | VF -- ^ Face
   deriving Show
 
 pRecordName :: DataFormat -> Parser RecordName
@@ -530,6 +536,12 @@ pRecordName df =
          case r of
            10  -> pure DS
            20  -> pure DP
+           30  -> pure DH
+           40  -> pure DA
+           60  -> pure CR
+           70  -> pure ID
+           80  -> pure IO
+           90  -> pure IS
            100 -> pure FE
            110 -> pure VI -- isolated node
            120 -> pure VC -- connected node
