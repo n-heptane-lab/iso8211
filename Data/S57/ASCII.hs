@@ -19,6 +19,7 @@ import Data.Bits
 import GHC.Base (Int(..), uncheckedShiftL#)
 import GHC.Word
 import Prelude hiding (GT)
+import Debug.Trace (trace)
 
 shiftl_w16 :: Word16 -> Int -> Word16
 shiftl_w32 :: Word32 -> Int -> Word32
@@ -77,7 +78,7 @@ pDDRLeader =
      ai  <- A.char ' '
      fcl <- liftA2 (,) (A.char '0') (A.char '9')
      sa  <- A.take 5
-     ecs <- liftA3 (,,) (A.char ' ') (A.char '!') (A.char ' ')
+     ecs <- liftA3 (,,) (A.char ' ') (A.char '!' <|> A.char ' ') (A.char ' ')
      em  <- pEntryMap
      pure $ Leader rl il li ice vn ai fcl sa ecs em
 
@@ -139,11 +140,11 @@ c2i '7' = 7
 c2i '8' = 8
 c2i '9' = 9
 
-implicit2i :: [Char] -> Int
-implicit2i cs = implicit2i' 0 cs
+digits2int :: (Integral i) => [Char] -> i
+digits2int cs = fromIntegral (digits2int' 0 cs)
   where
-    implicit2i' acc [] = acc
-    implicit2i' acc (c:cs) = implicit2i' ((acc * 10) + (c2i c)) cs
+    digits2int' acc [] = acc
+    digits2int' acc (c:cs) = digits2int' ((acc * 10) + (c2i c)) cs
 
 pDirectoryEntry :: EntryMap -> Parser DirectoryEntry
 pDirectoryEntry (EntryMap sfl sfp _ sft) =
@@ -299,9 +300,9 @@ pDataFormat =
          pure $ replicate c r
     pWidth =
       do A.char '('
-         i <- A.digit
+         i <- A.many' A.digit
          A.char ')'
-         pure (Just $ c2i i)
+         pure (Just $ digits2int i)
       <|> pure Nothing
     pWidth2 =
       do A.char '('
@@ -312,9 +313,13 @@ pDataFormat =
 
 pA :: Maybe Int -> Parser ByteString
 pA (Just l) = A.take l
+pA Nothing = A.takeTill ((==) ut) <* pUt
 
 pI :: Int -> Parser Int
-pI l = implicit2i <$> A.count l A.digit
+pI l = digits2int <$> A.count l A.digit
+
+pW :: Int -> Parser Word32
+pW l = digits2int <$> A.count l A.digit
 
 pR :: Maybe Int -> Parser ByteString
 pR (Just l) = A.take l
@@ -466,8 +471,9 @@ pFields ddfs (Directory entries) = pFields' entries
                "VRID" -> FVRID <$> pVRID fcs
                "SG3D" -> FSG3D <$> pSG3DS fcs
                "DSPM" -> FDSPM <$> pDSPM fcs
+               "CATD" -> FCATD <$> pCATD fcs
                _      -> pure (Unknown ft) <* skipField
-               _      -> fail $ "No parser for " ++ show ft
+--               _      -> fail $ "No parser for " ++ show ft
          fs <- pFields' ds
          pure (f:fs)
 
@@ -500,7 +506,8 @@ data ASCII (dom :: TextDomain) = ASCII ByteString
  deriving Show
 
 data RecordName
-  = DS
+  = CD
+  | DS
   | DP
   | FE
   | VI
@@ -515,6 +522,7 @@ pRecordName df =
     (A ml) ->
       do r <- pA ml
          case r of
+           "CD" -> pure CD
            "DS" -> pure DS
            _ -> fail $ show r ++ " is not a known record name"
     (B1W i) ->
@@ -536,6 +544,7 @@ pRecordID :: DataFormat -> Parser RecordID
 pRecordID df =
   case df of
     (B1W w) -> RecordID <$> pB1W w
+    (I (Just w))   -> RecordID <$> pW w
 
 data ExchangePurpose
   = New
@@ -643,8 +652,16 @@ pDate df =
   case df of
     (A i) -> ASCII <$> pA i
 
-pReal :: Maybe Int -> Parser (ASCII 'REAL)
-pReal i = ASCII <$> (pR i)
+pReal :: DataFormat -> Parser (ASCII 'REAL)
+pReal df =
+  case df of
+    (R i) -> ASCII <$> (pA i)
+--    _ -> trace "not implemented" (error "not implemented.")
+
+pHex :: DataFormat -> Parser (ASCII 'HEX)
+pHex df =
+  case df of
+    (A i) -> ASCII <$> (pA i)
 
 pInt :: DataFormat -> Parser Word32
 pInt df =
@@ -670,7 +687,7 @@ pDSID (FormatControls fcs) =
        <*> pBT              -- 6
        <*> pDate            (fcs!!7)
        <*> pDate            (fcs!!8)
-       <*> pReal              (Just 4) -- (fcs!!9)
+       <*> pReal            (fcs!!9)
        <*> pProductSpecification (fcs!!10)
        <*> pBT              -- 11
        <*> pBT              -- 12
@@ -1015,6 +1032,53 @@ pDSPM (FormatControls fcs) =
        <*  pFt
 
 
+data Implementation
+  = ASC
+  | BIN
+  | TXT
+    deriving Show
+
+pImplementation :: DataFormat -> Parser Implementation
+pImplementation df =
+  case df of
+    (A w) -> do r <- pA w
+                case r of
+                  "ASC" -> pure ASC
+                  "BIN" -> pure BIN
+                  "TXT" -> pure TXT
+                  _ -> error $ "unknown case =" ++ show r
+
+data CATD = CATD
+  { rcnm :: RecordName
+  , rcid :: RecordID
+  , file :: ASCII 'BT
+  , lfil :: ASCII 'BT
+  , volm :: ASCII 'BT
+  , impl :: Implementation
+  , slat :: ASCII 'REAL
+  , wlon :: ASCII 'REAL
+  , nlat :: ASCII 'REAL
+  , elat :: ASCII 'REAL
+  , crcs :: ASCII 'HEX
+  , comt :: ASCII 'BT
+  }
+  deriving Show
+
+pCATD :: FormatControls -> Parser CATD
+pCATD (FormatControls fcs) =
+  CATD <$> pRecordName (fcs!!0)
+       <*> pRecordID   (fcs!!1)
+       <*> pBT -- 2
+       <*> pBT -- 3
+       <*> pBT -- 4
+       <*> pImplementation (fcs!!5)
+       <*> pReal (fcs!!6)
+       <*> pReal (fcs!!7)
+       <*> pReal (fcs!!8)
+       <*> pReal (fcs!!9)
+       <*> pHex (fcs!!10)
+       <*> pBT
+       <* pFt
 
 data Module = Module
   { _ddrLeader             :: Leader
@@ -1037,6 +1101,7 @@ data Field
  | FVRID VRID
  | FSG3D SG3DS
  | FDSPM DSPM
+ | FCATD CATD
  | Unknown FieldTag
  deriving Show
 
