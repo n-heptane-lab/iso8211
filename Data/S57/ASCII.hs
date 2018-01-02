@@ -7,15 +7,18 @@ module Data.S57.ASCII where
 
 import Control.Applicative ((<|>), liftA2, liftA3, optional)
 import Data.ByteString (ByteString)
-import Data.Attoparsec.ByteString.Char8 (Parser)
+import qualified Data.ByteString.Char8 as C
+import Data.Attoparsec.ByteString.Char8 (Parser, IResult(..))
 import qualified Data.ByteString.Unsafe   as B
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import           Data.Attoparsec.ByteString.Char8 ((<?>))
 import           Data.Attoparsec.ByteString (anyWord8)
 import qualified Data.Map as Map
 import           Data.Map (Map)
 import Data.Int (Int8, Int16, Int32)
 import Data.Maybe (fromJust)
 import Data.Bits
+import Data.List (nub)
 import GHC.Base (Int(..), uncheckedShiftL#)
 import GHC.Word
 import Prelude hiding (GT)
@@ -30,7 +33,7 @@ shiftl_w32 (W32# w) (I# i) = W32# (w `uncheckedShiftL#`   i)
 
 -- http://www.dtic.mil/dtic/tr/fulltext/u2/a281594.pdf
 -- https://github.com/freekvw/iso8211/blob/master/iso8211.py
-
+-- https://github.com/tburke/iso8211/blob/master/iso8211.go
 {-
 -- https://github.com/naturalatlas/node-gdal/blob/master/deps/libgdal/gdal/frmts/iso8211/teststream.out
 
@@ -66,7 +69,7 @@ data Leader = Leader
   , _extendedCharacterSet         :: (Char, Char, Char) -- (" ", "!", " ")
   , _entryMap                     :: EntryMap
   }
-  deriving (Show)
+  deriving (Eq, Show)
 
 pDDRLeader :: Parser Leader
 pDDRLeader =
@@ -85,7 +88,7 @@ pDDRLeader =
 pDRLeader :: Parser Leader
 pDRLeader =
   do rl  <- A.take 5
-     il  <- A.char ' '
+     il  <- A.char ' ' <?> "failed to parse space"
      li  <- A.char 'D'
      ice <- A.char ' '
      vn  <- A.char ' '
@@ -102,7 +105,7 @@ data EntryMap = EntryMap
   , _reserved            :: Char -- "0"
   , _sizeOfFieldTag      :: Char -- "4"
   }
-  deriving (Show)
+  deriving (Eq, Show)
 
 pEntryMap :: Parser EntryMap
 pEntryMap =
@@ -126,7 +129,7 @@ data DirectoryEntry = DirectoryEntry
   , _fieldLength   :: ByteString
   , _fieldPosition :: ByteString
   }
-  deriving Show
+  deriving (Eq, Show)
 
 c2i :: Char -> Int
 c2i '0' = 0
@@ -154,7 +157,7 @@ pDirectoryEntry (EntryMap sfl sfp _ sft) =
      pure $ DirectoryEntry ft fl fp
 
 data Directory = Directory { _directoryEntries :: [DirectoryEntry] }
-  deriving Show
+  deriving (Eq, Show)
 
 pDirectory :: EntryMap -> Parser Directory
 pDirectory entryMap =
@@ -177,8 +180,11 @@ pFt =
   do A.char ft
      pure ()
 
-skipField :: Parser ()
-skipField = A.manyTill A.anyChar pFt *> pure ()
+skipField :: Int -> Parser ()
+skipField c = A.count (Prelude.pred c) A.anyChar *> pFt *> pure () -- A.manyTill A.anyChar pFt *> pure ()
+
+skipUnit :: Parser ()
+skipUnit = A.manyTill A.anyChar pUt *> pure ()
 
 pNull :: Parser ()
 pNull =
@@ -193,19 +199,19 @@ data TruncatedEscapeSequence
   = TES0
   | TES1
   | TES2
-  deriving Show
+  deriving (Eq, Show)
 
 pTruncatedEscapeSequence :: Parser TruncatedEscapeSequence
 pTruncatedEscapeSequence =
   A.choice [ A.string "   " *> pure TES0
            , A.string "-A " *> pure TES1
            , A.string "%/A" *> pure TES2
-           ]
+           ] <|> error "unknown tes"
 
 data FieldControlField = FieldControlField
   { _fieldTags :: [(ByteString, ByteString)]
   }
-  deriving Show
+  deriving (Eq, Show)
 
 pFieldPair :: Parser (ByteString, ByteString)
 pFieldPair = (,) <$> pFieldTag <*> pFieldTag
@@ -240,19 +246,19 @@ data DataStructureCode
   = Singleton -- ? not specified in the spec
   | Linear
   | MultiDimensional
-  deriving Show
+  deriving (Eq, Show)
 
 pDataStructureCode :: Parser DataStructureCode
 pDataStructureCode =
   A.choice [ A.char '0' *> pure Singleton
            , A.char '1' *> pure Linear
            , A.char '2' *> pure MultiDimensional
-           ]
+           ] <|> error "unknown data structure code"
 
 
 data ArrayDescriptor
   = ArrayDescriptor
-  deriving Show
+  deriving (Eq, Show)
 
 pArrayDescriptor :: Parser ArrayDescriptor
 pArrayDescriptor =
@@ -270,7 +276,7 @@ data DataFormat
  | At
  | B1W Int  -- unsigned integer
  | B2W Int  -- signed integer
-   deriving Show
+   deriving (Eq, Show)
 
 pDataFormat :: Parser [DataFormat]
 pDataFormat =
@@ -292,7 +298,7 @@ pDataFormat =
                     , do A.string "b2"
                          i <- A.digit -- should only be 1,2 or 4
                          pure (B2W $ c2i i)
-                    ])
+                    ]) <|> error "unknown data format"
   where
     rep p =
       do c <- (c2i <$> A.digit) <|> pure 1
@@ -370,7 +376,7 @@ data LexicalLevel
   = LexicalLevel0
   | LexicalLevel1
   | LexicalLevel2
-    deriving Show
+    deriving (Eq, Show)
 
 pLexicalLevel :: DataFormat -> Parser LexicalLevel
 pLexicalLevel df =
@@ -384,7 +390,7 @@ pLexicalLevel df =
 data FormatControls = FormatControls
   { _dataFormats :: [DataFormat]
   }
-  deriving Show
+  deriving (Eq, Show)
 
 pFormatControls :: Parser FormatControls
 pFormatControls =
@@ -398,7 +404,7 @@ data DataTypeCode
   | ImplicitPoint
   | BinaryForm
   | MixedDataTypes
-    deriving Show
+    deriving (Eq, Show)
 
 pDataTypeCode :: Parser DataTypeCode
 pDataTypeCode =
@@ -406,7 +412,7 @@ pDataTypeCode =
            , A.char '1' *> pure ImplicitPoint
            , A.char '5' *> pure BinaryForm
            , A.char '6' *> pure MixedDataTypes
-           ]
+           ] <|> error "unknown data type code"
 
 pAuxiliaryControls :: Parser ()
 pAuxiliaryControls = A.string "00" *> pure ()
@@ -416,7 +422,7 @@ data FieldControls = FieldControls
   , _dataTypeCode            :: DataTypeCode
   , _truncatedEscapeSequence :: TruncatedEscapeSequence
   }
-  deriving Show
+  deriving (Eq, Show)
 
 pFieldControls :: Parser FieldControls
 pFieldControls =
@@ -434,7 +440,7 @@ data DataDescriptiveField = DataDescriptiveField
   , _arrayDescription :: ArrayDescriptor
   , _formatControls   :: FormatControls
   }
-  deriving Show
+  deriving (Eq, Show)
 
 pDataDescriptiveField :: Parser DataDescriptiveField
 pDataDescriptiveField =
@@ -446,7 +452,7 @@ data DataRecord = DataRecord
   , _drDirectory :: Directory
   , _drFields    :: [Field]
   }
-  deriving Show
+  deriving (Eq, Show)
 
 p0001 :: FormatControls -> Parser RecordID
 p0001 (FormatControls fcs) =
@@ -457,7 +463,7 @@ pFields :: Map FieldTag DataDescriptiveField -> Directory -> Parser [Field]
 pFields ddfs (Directory entries) = pFields' entries
   where
     pFields' [] = pure []
-    pFields' ((DirectoryEntry ft _ _):ds) =
+    pFields' ((DirectoryEntry ft fl _):ds) =
       do let fcs = _formatControls $ fromJust (Map.lookup ft ddfs)
          f <- case ft of
                "0001" -> RecordIdentifier <$> p0001 fcs
@@ -465,21 +471,25 @@ pFields ddfs (Directory entries) = pFields' entries
                "DSSI" -> FDSSI <$> pDSSI fcs
                "FRID" -> FFRID <$> pFRID fcs
                "FOID" -> FFOID <$> pFOID fcs
-               "ATTF" -> FATTF <$> pATTFS fcs
-               "FFPT" -> FFFPT <$> pFFPTS fcs
-               "FSPT" -> FFSPT <$> pFSPTS fcs
+               "ATTF" -> FATTF <$> pATTFS fcs (digits2int $ C.unpack fl)
+               "ATTV" -> FATTV <$> pATTVS fcs (digits2int $ C.unpack fl)
+               "FFPT" -> FFFPT <$> pFFPTS fcs (digits2int $ C.unpack fl)
+               "FSPT" -> FFSPT <$> pFSPTS fcs (digits2int $ C.unpack fl)
                "VRID" -> FVRID <$> pVRID fcs
-               "SG3D" -> FSG3D <$> pSG3DS fcs
+--               "SG3D" -> pure (Unknown ft) <* (A.count 7 skipField)
+               "SG2D" -> FSG2D <$> pSG2DS fcs (digits2int $ C.unpack fl)
+               "SG3D" -> FSG3D <$> pSG3DS fcs (digits2int $ C.unpack fl)
                "DSPM" -> FDSPM <$> pDSPM fcs
                "CATD" -> FCATD <$> pCATD fcs
-               _      -> pure (Unknown ft) <* skipField
+               "VRPT" -> FVRPT <$> pVRPT fcs
+               _      -> pure (Unknown ft) <* (skipField (digits2int $ C.unpack fl))
 --               _      -> fail $ "No parser for " ++ show ft
          fs <- pFields' ds
          pure (f:fs)
 
 pDataRecord :: Map FieldTag DataDescriptiveField -> Parser DataRecord
 pDataRecord ddf =
-  do leader <- pDRLeader
+  do leader <- pDRLeader <?> "failed to parse leader"
      directory <- pDirectory (_entryMap leader)
 {-     
      rcid  <- p0001 (_formatControls $ fromJust (Map.lookup "0001" ddf))
@@ -500,10 +510,10 @@ data TextDomain
   | REAL
   | AN
   | HEX
-    deriving Show
+    deriving (Eq, Show)
 
 data ASCII (dom :: TextDomain) = ASCII ByteString
- deriving Show
+ deriving (Eq, Show)
 
 data RecordName
   = DS -- ^ Data Set General Information
@@ -520,7 +530,7 @@ data RecordName
   | VC -- ^ Connected Node
   | VE -- ^ Edge
   | VF -- ^ Face
-  deriving Show
+  deriving (Eq, Show)
 
 pRecordName :: DataFormat -> Parser RecordName
 pRecordName df =
@@ -550,7 +560,7 @@ pRecordName df =
            _ -> fail $ show r ++ " is not a known record name"
 
 newtype RecordID = RecordID { _recordID :: Word32 }
-  deriving Show
+  deriving (Eq, Show)
 
 pRecordID :: DataFormat -> Parser RecordID
 pRecordID df =
@@ -561,7 +571,7 @@ pRecordID df =
 data ExchangePurpose
   = New
   | Revision
-    deriving Show
+    deriving (Eq, Show)
 
 pExchangePurpose :: DataFormat -> Parser ExchangePurpose
 pExchangePurpose df =
@@ -582,7 +592,7 @@ pIntu df =
 data ProductSpecification
   = ENC -- ENC Electronic Navigation Chart
   | ODD -- IHO Object Catalogue Data Direction
-    deriving Show
+    deriving (Eq, Show)
 
 pProductSpecification :: DataFormat -> Parser ProductSpecification
 pProductSpecification df =
@@ -598,7 +608,7 @@ data ApplicationProfileIdentification
   = EN -- ENC New
   | ER -- ENC Revision
   | DD -- IHO Data dictionary
-    deriving Show
+    deriving (Eq, Show)
 
 pApplicationProfileIdentification :: DataFormat -> Parser ApplicationProfileIdentification
 pApplicationProfileIdentification df =
@@ -628,12 +638,12 @@ data DSID = DSID
   , agen :: ProducingAgency
   , comt :: ASCII 'BT
   }
- deriving Show
+ deriving (Eq, Show)
 
 data ProducingAgency
  = NOAA
  | ProducingAgency Word32
- deriving Show
+ deriving (Eq, Show)
 
 
 -- need more information to implement correctly
@@ -714,7 +724,7 @@ data DataStructure
   | PG -- ^ Planar Graph
   | FT -- ^ Full Topology
   | NO -- ^ Topology is not relevant
-    deriving Show
+    deriving (Eq, Show)
 
 pDataStructure :: DataFormat -> Parser DataStructure
 pDataStructure df =
@@ -742,7 +752,7 @@ data DSSI = DSSI
   , noed :: Word32
   , nofa :: Word32
   }
-  deriving Show
+  deriving (Eq, Show)
 
 pDSSI :: FormatControls -> Parser DSSI
 pDSSI (FormatControls fcs) =
@@ -764,7 +774,7 @@ data ObjectGeometricPrimitive
   | Line  -- ^ Line
   | Area  -- ^ Area
   | NA  -- ^ Object does not directly reference any spatial objects
-  deriving Show
+  deriving (Eq, Show)
 
 pObjectGeometricPrimitive :: DataFormat -> Parser ObjectGeometricPrimitive
 pObjectGeometricPrimitive df =
@@ -772,16 +782,16 @@ pObjectGeometricPrimitive df =
     (B1W w) ->
       do r <- pB1W w
          case r of
-           1 -> pure Point
-           2 -> pure Line
-           3 -> pure Area
-           4 -> pure NA
+           1   -> pure Point
+           2   -> pure Line
+           3   -> pure Area
+           255 -> pure NA
 
 data RecordUpdateInstruction
   = Insert
   | Delete
   | Modify
-  deriving Show
+  deriving (Eq, Show)
 
 pRecordUpdateInstruction :: DataFormat -> Parser RecordUpdateInstruction
 pRecordUpdateInstruction df =
@@ -801,7 +811,7 @@ data FRID = FRID
   , rver :: Word16
   , ruin :: RecordUpdateInstruction
   }
-  deriving Show
+  deriving (Eq, Show)
 
 pFRID :: FormatControls -> Parser FRID
 pFRID (FormatControls fcs) =
@@ -819,7 +829,7 @@ data FOID = FOID
   , fidn :: Word32
   , fids :: Word16
   }
-  deriving Show
+  deriving (Eq, Show)
 
 pFOID :: FormatControls -> Parser FOID
 pFOID (FormatControls fcs) =
@@ -829,23 +839,53 @@ pFOID (FormatControls fcs) =
        <* pFt
 
 data ATTFS = ATTFS [ATTF]
- deriving Show
+ deriving (Eq, Show)
 
 data ATTF = ATTF
   { attl :: Word16
   , atvl :: ASCII 'GT
   }
-  deriving Show
+  deriving (Eq, Show)
 
 pATTF :: FormatControls -> Parser ATTF
 pATTF (FormatControls fcs) =
   ATTF <$> pIntegral (fcs!!0) <*> pGT
 
-pATTFS :: FormatControls -> Parser ATTFS
-pATTFS fcs = ATTFS <$> A.manyTill (pATTF fcs) pFt
+pATTFS :: FormatControls -> Int -> Parser ATTFS
+pATTFS fcs len = ATTFS <$> pRepeated len (pATTF fcs)
+
+data ATTVS = ATTVS [ATTV]
+ deriving (Eq, Show)
+
+data ATTV = ATTV
+  { attl :: Word16
+  , atvl :: ASCII 'BT
+  }
+  deriving (Eq, Show)
+
+pATTV :: FormatControls -> Parser ATTV
+pATTV (FormatControls fcs) =
+  ATTV <$> pIntegral (fcs!!0) <*> pBT
+
+pATTVS :: FormatControls -> Int -> Parser ATTVS
+pATTVS fcs len = ATTVS <$> pRepeated len (pATTV fcs)
+
+-- FIXME: we can not just repeat a parser until we see a 0x1f because a value in the field could start with 0x1f
+-- we need to look at the field length
+pRepeated :: (Show a) => Int -> Parser a -> Parser [a]
+pRepeated len p =
+  do bs <- A.take (len - 1)
+     pFt
+     r <- A.parseWith (pure mempty) (A.many' p) bs
+     case r of
+       f@(Fail {}) -> fail $ show f
+       Partial {} -> fail "pRepeated ended with a Partial."
+       Done i r
+         | mempty == i -> pure r
+         | otherwise -> fail $ "pRepeated terminated with left over data " ++ show i
 
 data ForeignPointer = ForeignPointer [Word8]
-                    deriving Show
+                    deriving (Eq, Show)
 
 pForeignPointer :: DataFormat -> Parser ForeignPointer
 pForeignPointer df =
@@ -856,7 +896,7 @@ data Orientation
   = Forward
   | Reverse
   | NullOrientation
-    deriving Show
+    deriving (Eq, Show)
 
 pOrientation :: DataFormat -> Parser Orientation
 pOrientation df =
@@ -873,7 +913,7 @@ data UsageIndicator
   | Interior
   | ExteriorBoundary
   | NullUsageIndicator
-    deriving Show
+    deriving (Eq, Show)
 
 pUsageIndicator :: DataFormat -> Parser UsageIndicator
 pUsageIndicator df =
@@ -882,6 +922,7 @@ pUsageIndicator df =
                   case v of
                     1   -> pure Exterior
                     2   -> pure Interior
+                    3   -> pure ExteriorBoundary
                     255 -> pure NullUsageIndicator
                     _   -> fail $ "Invalid usage indicator = " ++ show v
 
@@ -889,7 +930,7 @@ data MaskingIndicator
   = Mask
   | Show
   | NullMaskingIndicator
-    deriving Show
+    deriving (Eq, Show)
 
 pMaskingIndicator :: DataFormat -> Parser MaskingIndicator
 pMaskingIndicator df =
@@ -908,7 +949,7 @@ data FSPT = FSPT
   , usag :: UsageIndicator
   , mask :: MaskingIndicator
   }
-  deriving Show
+  deriving (Eq, Show)
 
 pFSPT :: FormatControls -> Parser FSPT
 pFSPT (FormatControls fcs) =
@@ -918,16 +959,17 @@ pFSPT (FormatControls fcs) =
        <*> pMaskingIndicator (fcs!!3)
 
 data FSPTS = FSPTS { _fspts :: [FSPT] }
-  deriving Show
+  deriving (Eq, Show)
 
-pFSPTS :: FormatControls -> Parser FSPTS
-pFSPTS fcs = FSPTS <$> A.manyTill (pFSPT fcs) pFt
+pFSPTS :: FormatControls -> Int -> Parser FSPTS
+-- pFSPTS fcs = FSPTS <$> A.manyTill (pFSPT fcs) pFt
+pFSPTS fcs len = FSPTS <$> pRepeated len (pFSPT fcs)
 
 data RelationshipIndicator
   = Master
   | Slave
   | Peer
-  deriving Show
+  deriving (Eq, Show)
 
 pRelationshipIndicator :: DataFormat -> Parser RelationshipIndicator
 pRelationshipIndicator df =
@@ -944,7 +986,7 @@ data FFPT = FFPT
   , rind :: RelationshipIndicator
   , comt :: ASCII 'BT
   }
-  deriving Show
+  deriving (Eq, Show)
 
 pFFPT :: FormatControls -> Parser FFPT
 pFFPT (FormatControls fcs) =
@@ -953,10 +995,10 @@ pFFPT (FormatControls fcs) =
        <*> pBT
 
 data FFPTS = FFPTS { _ffpts :: [FFPT] }
-  deriving Show
+  deriving (Eq, Show)
 
-pFFPTS :: FormatControls -> Parser FFPTS
-pFFPTS fcs = FFPTS <$> A.manyTill (pFFPT fcs) pFt
+pFFPTS :: FormatControls -> Int -> Parser FFPTS
+pFFPTS fcs len = FFPTS <$> pRepeated len (pFFPT fcs)
 
 -- incompleted
 data VRID = VRID
@@ -965,7 +1007,7 @@ data VRID = VRID
   , rver :: Word16
   , ruin :: RecordUpdateInstruction
   }
- deriving Show
+ deriving (Eq, Show)
 
 pVRID :: FormatControls -> Parser VRID
 pVRID (FormatControls fcs) =
@@ -980,7 +1022,7 @@ data SG3D = SG3D
   , xcoo :: Int32
   , ve3d :: Int32
   }
-  deriving Show
+  deriving (Eq, Show)
 
 pSG3D :: FormatControls -> Parser SG3D
 pSG3D (FormatControls fcs) =
@@ -989,16 +1031,33 @@ pSG3D (FormatControls fcs) =
        <*> pInteger (fcs!!2)
 
 data SG3DS = SG3DS { _sg3ds :: [SG3D] }
-  deriving Show
+  deriving (Eq, Show)
 
-pSG3DS :: FormatControls -> Parser SG3DS
-pSG3DS fcs = SG3DS <$> A.manyTill (pSG3D fcs) pFt
+pSG3DS :: FormatControls -> Int -> Parser SG3DS
+pSG3DS fcs len = SG3DS <$> pRepeated len (pSG3D fcs)
+
+data SG2D = SG2D
+  { ycoo :: Int32
+  , xcoo :: Int32
+  }
+  deriving (Eq, Show)
+
+pSG2D :: FormatControls -> Parser SG2D
+pSG2D (FormatControls fcs) =
+  SG2D <$> pInteger (fcs!!0)
+       <*> pInteger (fcs!!1)
+
+data SG2DS = SG2DS { _sg2ds :: [SG2D] }
+  deriving (Eq, Show)
+
+pSG2DS :: FormatControls -> Int -> Parser SG2DS
+pSG2DS fcs len = SG2DS <$> pRepeated len (pSG2D fcs)
 
 data CoordinateUnits
   = LatitudeLongitude -- ^ LatitudeLongitude
   | EastingNorthing-- ^ Easting/Northing
   | UnitsChart -- ^ Units on the chart/map
-    deriving Show
+    deriving (Eq, Show)
 
 pCoordinateUnits :: DataFormat -> Parser CoordinateUnits
 pCoordinateUnits df =
@@ -1024,7 +1083,7 @@ data DSPM = DSPM
   , somf :: Word32
   , comt :: ASCII 'BT
   }
-  deriving Show
+  deriving (Eq, Show)
 
 pDSPM :: FormatControls -> Parser DSPM
 pDSPM (FormatControls fcs) =
@@ -1048,7 +1107,7 @@ data Implementation
   = ASC
   | BIN
   | TXT
-    deriving Show
+    deriving (Eq, Show)
 
 pImplementation :: DataFormat -> Parser Implementation
 pImplementation df =
@@ -1074,7 +1133,7 @@ data CATD = CATD
   , crcs :: ASCII 'HEX
   , comt :: ASCII 'BT
   }
-  deriving Show
+  deriving (Eq, Show)
 
 pCATD :: FormatControls -> Parser CATD
 pCATD (FormatControls fcs) =
@@ -1092,14 +1151,44 @@ pCATD (FormatControls fcs) =
        <*> pBT
        <* pFt
 
-data Module = Module
-  { _ddrLeader             :: Leader
-  , _ddrDirectory          :: Directory
-  , _fieldControlField     :: FieldControlField
-  , _dataDescriptiveFields :: Map FieldTag DataDescriptiveField
-  , _drs                   :: [DataRecord]
+data TopologyIndicator
+  = BeginningNode
+  | EndNode
+  | LeftFace
+  | RightFace
+  | ContainingFace
+  | NullTopologyIndicator
+    deriving (Eq, Show)
+
+pTopologyIndicator :: DataFormat -> Parser TopologyIndicator
+pTopologyIndicator df =
+  case df of
+    (B1W w) -> do v <- pB1W w
+                  case v of
+                    1   -> pure BeginningNode
+                    2   -> pure EndNode
+                    3   -> pure LeftFace
+                    4   -> pure RightFace
+                    5   -> pure ContainingFace
+                    255 -> pure NullTopologyIndicator
+                    _   -> fail $ "Invalid masking indicator = " ++ show v
+
+data VRPT = VRPT
+  { name :: ForeignPointer
+  , ornt :: Orientation
+  , usag :: UsageIndicator
+  , topi :: TopologyIndicator
+  , mask :: MaskingIndicator
   }
-  deriving Show
+  deriving (Eq, Show)
+
+pVRPT :: FormatControls -> Parser VRPT
+pVRPT (FormatControls fcs) =
+  VRPT <$> pForeignPointer    (fcs!!0)
+       <*> pOrientation       (fcs!!1)
+       <*> pUsageIndicator    (fcs!!1)
+       <*> pTopologyIndicator (fcs!!2)
+       <*> pMaskingIndicator  (fcs!!3)
 
 data Field
  = RecordIdentifier RecordID
@@ -1108,14 +1197,26 @@ data Field
  | FFRID FRID
  | FFOID FOID
  | FATTF ATTFS
+ | FATTV ATTVS
  | FFSPT FSPTS
  | FFFPT FFPTS
  | FVRID VRID
+ | FSG2D SG2DS
  | FSG3D SG3DS
  | FDSPM DSPM
  | FCATD CATD
+ | FVRPT VRPT
  | Unknown FieldTag
- deriving Show
+ deriving (Eq, Show)
+
+data Module = Module
+  { _ddrLeader             :: Leader
+  , _ddrDirectory          :: Directory
+  , _fieldControlField     :: FieldControlField
+  , _dataDescriptiveFields :: Map FieldTag DataDescriptiveField
+  , _drs                   :: [DataRecord]
+  }
+  deriving (Eq, Show)
 
 pModule :: Parser Module
 pModule =
@@ -1126,7 +1227,15 @@ pModule =
      ddf' <- A.count (Prelude.pred (length $ _directoryEntries d)) pDataDescriptiveField
      let ddf = Map.fromList $ zipWith (\d df -> (_fieldTag d, df)) (drop 1 $ _directoryEntries d) ddf'
      drs <- A.many' (pDataRecord ddf)
+--     drs <- A.count 10632 (pDataRecord ddf)
      pure $ Module l d fcf ddf drs
 
 pISO8211 = pModule
 
+printUnknown :: [DataRecord] -> IO ()
+printUnknown drs =
+  let allFields = concatMap _drFields drs
+      isUnknown :: Field -> Bool
+      isUnknown (Unknown {}) = True
+      isUnknown _ = False
+  in print $ nub $ filter isUnknown allFields

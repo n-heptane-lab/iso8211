@@ -1,8 +1,12 @@
 module Main where
 
-import Data.S57.ASCII (pISO8211, Module(..), Directory(..))
-import qualified Data.ByteString.Char8 as B
-import Data.Attoparsec.ByteString.Char8 (parseOnly)
+import Data.S57.ASCII (pISO8211, printUnknown, Module(..), Directory(..))
+import Data.ByteString.UTF8 as UTF8
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as C
+import Data.Attoparsec.ByteString.Char8 (parse, parseOnly, endOfInput)
+-- import Text.Trifecta.Parser (parseFromFile, parseByteString)
+-- import Text.Trifecta.Delta (Delta(..))
 
 main :: IO ()
 main =
@@ -12,9 +16,16 @@ main =
      -- c <- B.readFile "ENC_ROOT/US4IN01M/US4IN01M.000"
      c <- B.readFile "ENC_ROOT/US5IL11M/US5IL11M.000"
      -- c <- B.readFile "ENC_ROOT/CATALOG.031"
+--     let r = parse pISO8211 c
      let r = parseOnly pISO8211 c
-     print r
+--     r <- parseFromFile pISO8211 "ENC_ROOT/US5IL11M/US5IL11M.000"
+--     let r = parseByteString pISO8211 (Directed (UTF8.fromString "some file") 0 0 0 0) c
+     case r of
+       Left e -> putStrLn $ Prelude.take 1000 e
+       (Right m) ->
+         printUnknown (_drs m)
+         {-
      case r of
        (Right m) -> print $ length (_directoryEntries (_ddrDirectory m))
        _ -> pure ()
-
+-}
