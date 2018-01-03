@@ -1,7 +1,6 @@
 module Main where
 
-import Data.S57.ASCII (pISO8211, printUnknown, Module(..), Directory(..))
-import Data.ByteString.UTF8 as UTF8
+import Data.S57.ASCII (pISO8211, printUnknown, printDSSI, printDSPM, Module(..), Directory(..))
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as C
 import Data.Attoparsec.ByteString.Char8 (parse, parseOnly, endOfInput)
@@ -23,7 +22,8 @@ main =
      case r of
        Left e -> putStrLn $ Prelude.take 1000 e
        (Right m) ->
-         printUnknown (_drs m)
+         do printDSSI m
+            printDSPM m
          {-
      case r of
        (Right m) -> print $ length (_directoryEntries (_ddrDirectory m))

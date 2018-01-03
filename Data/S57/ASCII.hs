@@ -15,6 +15,7 @@ import           Data.Attoparsec.ByteString.Char8 ((<?>))
 import           Data.Attoparsec.ByteString (anyWord8)
 import qualified Data.Map as Map
 import           Data.Map (Map)
+import Data.Foldable (find)
 import Data.Int (Int8, Int16, Int32)
 import Data.Maybe (fromJust)
 import Data.Bits
@@ -491,13 +492,6 @@ pDataRecord :: Map FieldTag DataDescriptiveField -> Parser DataRecord
 pDataRecord ddf =
   do leader <- pDRLeader <?> "failed to parse leader"
      directory <- pDirectory (_entryMap leader)
-{-     
-     rcid  <- p0001 (_formatControls $ fromJust (Map.lookup "0001" ddf))
-     dsid <- pDSID (_formatControls $ fromJust (Map.lookup "DSID" ddf))
-     dssi <- pDSSI (_formatControls $ fromJust (Map.lookup "DSSI" ddf))
-[RecordIdentifier rcid, FDSID dsid, FDSSI dssi]
--}
---     vrid <- pVRID (_formatControls $ fromJust (Map.lookup "VRID" ddf))
      fields <- pFields ddf directory
      pure (DataRecord leader directory fields)
 
@@ -962,7 +956,6 @@ data FSPTS = FSPTS { _fspts :: [FSPT] }
   deriving (Eq, Show)
 
 pFSPTS :: FormatControls -> Int -> Parser FSPTS
--- pFSPTS fcs = FSPTS <$> A.manyTill (pFSPT fcs) pFt
 pFSPTS fcs len = FSPTS <$> pRepeated len (pFSPT fcs)
 
 data RelationshipIndicator
@@ -1227,7 +1220,6 @@ pModule =
      ddf' <- A.count (Prelude.pred (length $ _directoryEntries d)) pDataDescriptiveField
      let ddf = Map.fromList $ zipWith (\d df -> (_fieldTag d, df)) (drop 1 $ _directoryEntries d) ddf'
      drs <- A.many' (pDataRecord ddf)
---     drs <- A.count 10632 (pDataRecord ddf)
      pure $ Module l d fcf ddf drs
 
 pISO8211 = pModule
@@ -1239,3 +1231,25 @@ printUnknown drs =
       isUnknown (Unknown {}) = True
       isUnknown _ = False
   in print $ nub $ filter isUnknown allFields
+
+printDSSI :: Module -> IO ()
+printDSSI m =
+  case _drs m of
+    (dr:_) ->
+      case find (\df -> case df of
+                    (FDSSI {}) -> True
+                    _          -> False) (_drFields dr) of
+        Nothing -> putStrLn "Could not ofind DSSI"
+        (Just dssi) -> print dssi
+
+printDSPM :: Module -> IO ()
+printDSPM m = printDSPM' (_drs m)
+  where
+  printDSPM' (dr:drs) =
+      case find (\df -> case df of
+                    (FDSPM {}) -> True
+                    _          -> False) (_drFields dr) of
+        (Just dssi) -> print dssi
+        Nothing -> printDSPM' drs
+
+

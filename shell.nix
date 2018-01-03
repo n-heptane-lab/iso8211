@@ -4,12 +4,12 @@ let
 
   inherit (nixpkgs) pkgs;
 
-  f = { mkDerivation, attoparsec, base, bytestring, stdenv, trifecta }:
+  f = { mkDerivation, attoparsec, base, bytestring, stdenv, text }:
       mkDerivation {
         pname = "iso8211";
         version = "0.1.0.0";
         src = ./.;
-        libraryHaskellDepends = [ attoparsec base bytestring trifecta pkgs.cabal-install ];
+        libraryHaskellDepends = [ attoparsec base bytestring text pkgs.cabal-install ];
         homepage = "http://www.github.com/stepcut/iso8211";
         description = "An ISO8211 parser target towards use with IHO S-57 vector chart files";
         license = stdenv.lib.licenses.bsd3;
